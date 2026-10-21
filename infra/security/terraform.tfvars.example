@@ -1,0 +1,8 @@
+member_accounts = {
+  management = { account_id = "111111111111", email = "management@example.com" }
+  live       = { account_id = "222222222222", email = "live@example.com" }
+  lab        = { account_id = "333333333333", email = "lab@example.com" }
+}
+org_id      = "o-exampleorgid"
+org_root_id = "r-examplerootid"
+alert_email = "alerts@example.com"

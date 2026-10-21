@@ -1,0 +1,8 @@
+account_emails = {
+  management = "management@example.com"
+  live       = "live@example.com"
+  lab        = "lab@example.com"
+  security   = "security@example.com"
+}
+sso_user_email         = "me@example.com"
+log_archive_kms_key_id = "00000000-0000-0000-0000-000000000000"
