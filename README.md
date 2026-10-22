@@ -16,9 +16,9 @@ follow established standards, and testing that each one actually works.
 Four accounts in one AWS Organization, each with one job:
 
 - **management**: runs the organization: AWS Organizations, IAM Identity
-  Center (single sign-on), billing and budgets, the service control
-  policies (SCPs) every other account must follow, and the organization-wide
-  CloudTrail trail. No workloads run here.
+  Center (single sign-on), billing and budgets, the organization policies
+  (service control policies and others) every other account must follow,
+  and the organization-wide CloudTrail trail. No workloads run here.
 - **live**: production: the account for anything I actually run, whether
   that's websites, servers or databases.
 - **lab**: deliberately insecure experiments. Some guardrails are relaxed on
@@ -108,8 +108,9 @@ Would I find out about an attack?
 
 What's blocked outright, even for an admin?
 
-Service control policies are set in management and apply to every other
-account, admins included. They block whole categories of mistakes and
+Organization policies are set in management and apply to every other
+account, admins included. Most are service control policies; the last
+two below use newer types. They block whole categories of mistakes and
 attacks instead of relying on someone noticing.
 
 - **No leaving.** No account can leave the organization or be closed from
@@ -125,6 +126,20 @@ attacks instead of relying on someone noticing.
   Analyzer. Lab's deliberate exceptions are written into the same policy.
 - **Logs and alerts protected.** Nobody in a member account can change the
   log archive, its key or the alert forwarding.
+- **Only my organization reaches my data.** A resource control policy
+  caps every resource policy in the member accounts: identities
+  outside the organization, anonymous users included, can't use my S3
+  buckets, KMS keys or roles, even if a bucket policy allows it. AWS
+  services get in only when they're working for my organization, so
+  nobody can point their own CloudFront at my bucket. Web sign-ins must
+  be GitHub tokens from my own GitHub account, and unencrypted requests
+  are refused.
+- **Settings EC2 itself enforces.** A declarative policy turns the EC2
+  serial console off, blocks public sharing of machine images and disk
+  snapshots, and makes IMDSv2 the default in every member account.
+  Unlike a service control policy, which blocks a list of API calls,
+  EC2 itself holds these settings, so no member-account admin and no
+  future API can change them.
 
 Every account also has safe defaults: S3 and VPC public-access blocks
 (except lab), default VPCs deleted (no network exists unless I build one),
@@ -178,7 +193,7 @@ Would a forgotten resource or a crypto-miner surprise me on the bill?
 
 ## Results
 
-- **48 findings:** 1 critical, 6 high, 10 medium, 23 low and 8
+- **50 findings:** 1 critical, 6 high, 10 medium, 23 low and 10
   informational. Every critical, high and medium finding is fixed. The
   critical one, a path from one compromised account to the whole
   organization, I found by reviewing the roles myself, before running any
@@ -204,9 +219,9 @@ Would a forgotten resource or a crypto-miner surprise me on the bill?
 What I deliberately didn't do, and why:
 
 - **Management is the one account guardrails can't reach.** Service
-  control policies never apply to it, so nothing runs there, it's reached
-  only through single sign-on with MFA, and every guardrail change sends
-  an alert.
+  control and resource control policies never apply to it, so nothing
+  runs there, it's reached only through single sign-on with MFA, and
+  every guardrail change sends an alert.
 - **Admin access is broad.** My admin role uses AWS's AdministratorAccess
   policy; single sign-on, MFA and short sessions limit the risk. A
   narrower admin role is the first thing I'd tighten with more people.
@@ -234,6 +249,14 @@ What I deliberately didn't do, and why:
   I'd notice in the monthly alert test. Config's view covers us-east-1,
   where the region lock keeps member accounts; management isn't
   region-locked.
+- **The data perimeter has edges.** It doesn't cover the management
+  account's resources or AWS-managed keys, and I couldn't test the
+  rules against a real outside organization or GitHub account; those
+  follow AWS's published pattern, checked by review.
+- **VPC and S3 public access aren't in a declarative policy.** They're
+  set by Terraform and guarded by a service control policy; a third
+  layer couldn't be tested on its own and risked lab's deliberate
+  exception.
 - **The AI assistant's limits stop mistakes, not attackers.** The rules
   match command text, so a determined attacker could get around them.
   Separate read-only credentials for the assistant would be the real
@@ -274,6 +297,15 @@ What I deliberately didn't do, and why:
 - Baseline: a live admin trying to turn off default encryption, or to
   change S3 public-access settings, was denied; lab's exception still
   worked.
+- Data perimeter: a deliberately public test bucket in lab served a file
+  to anyone, over HTTPS and plain HTTP; with the policy attached, both
+  were refused while my own access still worked. Rolled out to live and
+  security one at a time, checking what relies on AWS services or
+  GitHub: the website, its deploy, the drift check, and log delivery
+  from CloudTrail and Config.
+- Declarative policy: a lab admin trying to turn the serial console on
+  or allow public machine images got a "declarative policy violation";
+  all three accounts report the settings as managed by the policy.
 
 ### Changes and drift
 - Drift: a policy that existed in AWS but not yet in the code turned the

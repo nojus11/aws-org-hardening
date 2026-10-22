@@ -91,6 +91,12 @@ Security OUs: detach it from the OU of the account being changed, or from
 all three for a module-wide change; `terraform apply` in management
 re-attaches.
 
+**Lab experiment that needs outside access** (the `DataPerimeter` RCP
+blocks it): remove `lab` from `aws_organizations_policy_attachment.data_perimeter`
+in `infra/management/rcp.tf` → plan + apply (expect "guardrails changed":
+DetachPolicy) → experiment → put `lab` back → apply → re-check with an
+anonymous request to a lab bucket (expect 403).
+
 **Break-glass (root task in a member account):** from management, e.g.
 `aws sts assume-root --target-principal <account-id> --task-policy-arn
 arn=arn:aws:iam::aws:policy/root-task/<Task> --profile management --region us-east-1`

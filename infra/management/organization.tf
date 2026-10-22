@@ -1,6 +1,6 @@
 resource "aws_organizations_organization" "this" {
   aws_service_access_principals = ["access-analyzer.amazonaws.com", "cloudtrail.amazonaws.com", "guardduty.amazonaws.com", "iam.amazonaws.com", "securityhub.amazonaws.com", "sso.amazonaws.com"]
-  enabled_policy_types          = ["AISERVICES_OPT_OUT_POLICY", "SERVICE_CONTROL_POLICY"]
+  enabled_policy_types          = ["AISERVICES_OPT_OUT_POLICY", "DECLARATIVE_POLICY_EC2", "RESOURCE_CONTROL_POLICY", "SERVICE_CONTROL_POLICY"]
   feature_set                   = "ALL"
 
   lifecycle {
