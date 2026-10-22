@@ -29,6 +29,29 @@ What to do when a `[AWS ALERT]` email arrives. How it's built:
 | New external access (Access Analyzer) | A resource I deliberately shared | Unintended → fix the policy. Intended + nobody can widen it (AWS-managed, like SSO roles) → archive rule in Terraform. Intended + editable trust (e.g. a GitHub deploy role) → archive that finding by hand in both analyzers (live/lab/… + security); a rule would silence a bad change too |
 | GuardDuty finding | Sample findings I generated | Sample? (`i-99999999`, `"sample":true`). Real → open it in security, in the region from the email; contain the resource (stop instance, revoke keys) |
 
+## Drift check failed (GitHub email)
+"Run failed: Drift check" from GitHub; the failed job names the account
+(`plan (<account>)`). The change can be up to ~24h old; an `[AWS ALERT]`
+for it may already be in the inbox.
+1. **Exit code first:**
+   `gh run view <run-id> --log-failed | grep -E -A20 "exit code|will be|Plan:|not authorized|New untagged"`
+   - **1 = the check broke**, AWS is fine: usually `not authorized` (a
+     resource `SecurityAudit` can't read → add the read to the role) or a
+     GitHub/provider hiccup → re-run.
+   - **2 = drift:** AWS differs from the code on `main`. The plan lines
+     name the resource and attribute.
+   - **Step "Untagged resources", exit 2:** a resource without
+     `ManagedBy` that isn't in `infra/<account>/untagged-baseline.txt`
+     (the log lists it). Who made it → CloudTrail; unwanted → delete;
+     expected (AWS default, new service-linked role) → add the line to the
+     baseline + commit. A "gone" notice → remove that line.
+2. **Mine?** Applied without pushing (`git log origin/main..main`) →
+   push, re-run (`gh workflow run drift.yml`). Applying at 10:17 UTC
+   (`-lock=false`) → re-run.
+3. **Not mine:** who and how → CloudTrail Event history in that account
+   (see Investigating). Unwanted → `terraform apply` restores the code;
+   a change I want to keep → update the code. Then "Not me" steps above.
+
 ## Containing a compromised identity
 - **SSO user:** Identity Center → user → delete active sessions; reset
   password and MFA. Role sessions last ≤ 1h (admin) / 4h (audit).
@@ -80,6 +103,8 @@ lab (`aws iam create-user --user-name alert-test-<date> --profile lab`,
 then `delete-user`). Expect the email within ~5 min. Nothing → check the
 SNS subscription (`ConfirmationWasAuthenticated` true, not pending) and
 the rules' FailedInvocations metric.
+Also check the drift check still runs: `gh run list --workflow drift.yml -L 3`
+→ one run per day. GitHub only emails on failure: no runs = silence.
 
 **If the email subscription is ever recreated:** don't click the
 confirmation link; confirm via CLI with `--authenticate-on-unsubscribe true`

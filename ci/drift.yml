@@ -1,0 +1,79 @@
+name: Drift check
+
+on:
+  schedule:
+    - cron: "17 10 * * *" # daily 10:17 UTC; off the hour, when GitHub is less busy
+  workflow_dispatch: # adds a "Run workflow" button
+
+permissions:
+  contents: read
+  id-token: write # lets the job ask GitHub for an OIDC token
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false # one account failing doesn't stop the others
+      matrix:
+        account: [management, live, lab, security]
+    env:
+      ACCOUNT: ${{ matrix.account }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.6
+          terraform_wrapper: false
+
+      # The code says profile = "<account>". Create that profile here, signing
+      # in as github-drift-check with GitHub's token: no code change, no keys.
+      - name: Sign in as github-drift-check
+        run: |
+          id=$(sed -n 's/.*tfstate-\([0-9]*\).*/\1/p' "infra/$ACCOUNT/backend.hcl")
+          curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value > "$RUNNER_TEMP/token"
+          mkdir -p ~/.aws
+          printf '[profile %s]\nrole_arn = arn:aws:iam::%s:role/github-drift-check\nweb_identity_token_file = %s\n' \
+            "$ACCOUNT" "$id" "$RUNNER_TEMP/token" > ~/.aws/config
+
+      - name: Init
+        run: terraform -chdir="infra/$ACCOUNT" init -input=false -backend-config=backend.hcl
+
+      # Exit 0 = matches, 2 = drift, 1 = error. -lock=false keeps the role read-only.
+      - name: Plan (drift check)
+        run: |
+          set +e
+          terraform -chdir="infra/$ACCOUNT" plan -input=false -lock=false -no-color -detailed-exitcode
+          code=$?
+          [ "$code" -eq 2 ] && echo "::error title=Drift::AWS differs from the code in $ACCOUNT"
+          exit "$code"
+
+      # Resources made outside Terraform: Config's list of everything without
+      # the ManagedBy tag vs the reviewed baseline. Exit 2 = new, like drift.
+      - name: Untagged resources (vs reviewed baseline)
+        if: ${{ !cancelled() }} # also when the plan found drift
+        run: |
+          set -o pipefail
+          export LC_ALL=C
+          aws configservice select-resource-config --profile "$ACCOUNT" --region us-east-1 \
+            --expression "SELECT resourceType, resourceName, resourceId, tags" --output json |
+            jq -r '.Results[] | fromjson
+              | select(.resourceType != "AWS::Config::ResourceCompliance")
+              | select([.tags[]?.key] | index("ManagedBy") | not)
+              | "\(.resourceType)\t\(.resourceName // .resourceId)"' | sort > "$RUNNER_TEMP/now.txt"
+          grep -v '^#' "infra/$ACCOUNT/untagged-baseline.txt" | sort > "$RUNNER_TEMP/baseline.txt"
+          gone=$(comm -23 "$RUNNER_TEMP/baseline.txt" "$RUNNER_TEMP/now.txt")
+          if [ -n "$gone" ]; then
+            printf 'Gone (remove from the baseline):\n%s\n' "$gone"
+            echo "::notice title=Untagged::$ACCOUNT: baseline entries gone, see log"
+          fi
+          new=$(comm -13 "$RUNNER_TEMP/baseline.txt" "$RUNNER_TEMP/now.txt")
+          if [ -n "$new" ]; then
+            printf 'New untagged resources:\n%s\n' "$new"
+            echo "::error title=Untagged::$ACCOUNT has resources outside Terraform and the baseline"
+            exit 2
+          fi
+          echo "$(wc -l < "$RUNNER_TEMP/now.txt") untagged, all in the baseline"

@@ -1,0 +1,25 @@
+# Weekly update PRs for what this repo pins. Pins stop hijacked tags;
+# Dependabot keeps them from freezing (security fixes included).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7 # only versions out for a week: bad releases are usually pulled by then
+
+  - package-ecosystem: terraform
+    directories:
+      - /infra/management
+      - /infra/live
+      - /infra/lab
+      - /infra/security
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      providers:
+        group-by: dependency-name # one PR per provider, covering all 4 roots
+        patterns: ["*"]

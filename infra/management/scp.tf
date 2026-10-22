@@ -110,7 +110,7 @@ resource "aws_organizations_policy" "protect_alerting" {
         Effect = "Deny"
         Action = ["events:DeleteRule", "events:DisableRule", "events:PutRule", "events:PutTargets", "events:RemoveTargets"]
         Resource = [
-          "arn:aws:events:*:*:rule/forward-*",                                # spokes: every account and region
+          "arn:aws:events:*:*:rule/forward-*",                                                # spokes: every account and region
           "arn:aws:events:us-east-1:${local.security_account_id}:rule/org-security-events/*", # hub rules
         ]
       },
@@ -234,6 +234,7 @@ resource "aws_organizations_policy" "restrict_regions" {
               local.audit_role_arn,
               local.security_admin_role_arn,
               "arn:aws:iam::*:role/alert-forwarder",
+              "arn:aws:iam::*:role/github-drift-check", # reads only (SecurityAudit)
             ]
           }
         }
@@ -342,6 +343,17 @@ resource "aws_organizations_policy" "protect_baseline" {
         ]
         Resource  = "*"
         Condition = { StringNotEquals = { "aws:PrincipalAccount" = local.lab_account_id } }
+      },
+      {
+        # Exempt from the region SCP (GuardDuty/EventBridge reads): nobody may
+        # repurpose it — new trust or more permissions — to use that exemption.
+        Sid    = "DenyDriftCheckRoleTampering"
+        Effect = "Deny"
+        Action = [
+          "iam:DeleteRole", "iam:UpdateAssumeRolePolicy", "iam:PutRolePolicy", "iam:DeleteRolePolicy",
+          "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:PutRolePermissionsBoundary",
+        ]
+        Resource = "arn:aws:iam::*:role/github-drift-check"
       },
     ]
   })

@@ -12,4 +12,10 @@ terraform {
 provider "aws" {
   region  = "us-east-1"
   profile = "management"
+
+  default_tags {
+    tags = {
+      ManagedBy = "terraform"
+    }
+  }
 }

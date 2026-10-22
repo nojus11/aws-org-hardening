@@ -217,3 +217,58 @@ resource "aws_cloudwatch_event_target" "forward_root_events" {
   arn      = var.alert_hub_bus_arn
   role_arn = aws_iam_role.alert_forwarder.arn
 }
+
+# --- Drift check: GitHub's daily read-only `terraform plan` ---
+
+# Lets GitHub Actions sign in with short-lived tokens instead of stored
+# keys. One per account; each role that trusts it limits repo and branch.
+resource "aws_iam_openid_connect_provider" "github" {
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
+}
+
+# Settings, not contents: SecurityAudit can't read log files or objects.
+resource "aws_iam_role" "github_drift_check" {
+  name = "github-drift-check"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = aws_iam_openid_connect_provider.github.arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          # cloud-security's main only, by owner + repo ID (never reused)
+          "token.actions.githubusercontent.com:sub" = "repo:nojus11@263101606/cloud-security@1418056310:ref:refs/heads/main"
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "github_drift_check" {
+  role       = aws_iam_role.github_drift_check.name
+  policy_arn = "arn:aws:iam::aws:policy/SecurityAudit"
+}
+
+# Plan reads its own state; the daily run uses -lock=false, so no writes.
+resource "aws_iam_role_policy" "github_drift_check_state" {
+  name = "read-terraform-state"
+  role = aws_iam_role.github_drift_check.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "s3:ListBucket"
+        Resource = "arn:aws:s3:::tfstate-${data.aws_caller_identity.current.account_id}"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "s3:GetObject"
+        Resource = "arn:aws:s3:::tfstate-${data.aws_caller_identity.current.account_id}/*"
+      },
+    ]
+  })
+}

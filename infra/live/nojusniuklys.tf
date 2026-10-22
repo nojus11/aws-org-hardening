@@ -101,6 +101,7 @@ resource "aws_cloudfront_distribution" "nojusniuklys" {
   #checkov:skip=CKV_AWS_310:single origin by design (one region only)
   #checkov:skip=CKV_AWS_68:no WAF: GET/HEAD-only static site, no backend; ≥ $5/month; Shield Standard included
   #checkov:skip=CKV2_AWS_47:no WAF (see CKV_AWS_68), and no Java backend for Log4j
+  #checkov:skip=CKV_AWS_86:access logging deferred, not accepted: options and cost still to research
   enabled             = true
   aliases             = ["nojusniuklys.com", "www.nojusniuklys.com"]
   default_root_object = "index.html"
@@ -238,7 +239,7 @@ resource "aws_iam_role" "nojusniuklys_deploy" {
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
-      Principal = { Federated = aws_iam_openid_connect_provider.github.arn }
+      Principal = { Federated = module.baseline.github_oidc_provider_arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = {

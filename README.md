@@ -30,8 +30,9 @@ Four accounts in one AWS Organization, each with one job:
   Security Hub; hosts the alerting hub (EventBridge → SNS email).
 
 Every account also gets the same baseline from one Terraform module: AWS
-Config recording, IAM Access Analyzer, safe defaults (see Guardrails), and
-a forwarder that sends its security events to the alerting hub.
+Config recording, IAM Access Analyzer, safe defaults (see Guardrails), a
+forwarder that sends its security events to the alerting hub, and the
+read-only role the daily drift check signs in with.
 
 The direction matters: evidence and alerts flow *into* security, and
 guardrails flow *down* from management. Someone who takes over live or lab
@@ -115,8 +116,8 @@ attacks instead of relying on someone noticing.
   inside it.
 - **One region.** Member accounts can only build in us-east-1, so stolen
   credentials can't run crypto-miners in a region nobody watches. The
-  read-only auditor and the security tooling keep what they need
-  everywhere.
+  read-only auditor, the security tooling and the drift check keep what
+  they need everywhere.
 - **Small instances only.** EC2 is limited to a few small instance types,
   so a stolen session can't launch expensive GPU machines.
 - **The baseline stays on.** Account admins can't switch off default
@@ -130,6 +131,36 @@ Every account also has safe defaults: S3 and VPC public-access blocks
 encrypted disks, IMDSv2 for new instances, no public sharing of disk
 snapshots or SSM documents, and an opt-out of AWS using my data to train
 AI services, locked so no account can turn it back on.
+
+### Changes and drift
+
+Is every change checked, and would I notice one I didn't make?
+
+- **Checks on every push.** Every commit is checked automatically:
+  Terraform formatting, Checkov's security checks on the code, and a
+  gitleaks scan of the whole git history for secrets. These checks need
+  no AWS access.
+- **A daily drift check.** Every day, GitHub runs `terraform plan` in all
+  four accounts and compares AWS with the code. Any difference, such as a
+  change made in the console, turns the run red and emails me. It signs
+  in with a read-only role through GitHub's OIDC, so there are no stored
+  keys; only the main branch of my private working repository can use
+  the role, and a service control policy stops member-account admins
+  from changing it.
+- **Resources outside the code.** `plan` only sees what Terraform
+  manages, so the same job also asks AWS Config for every resource
+  without my `ManagedBy = terraform` tag and compares the list with a
+  reviewed list of known exceptions, mostly AWS's own defaults. Anything
+  new turns the run red. Reviewing that list turned up one more leftover
+  from an old experiment, which I deleted.
+- **Pinned, and kept up to date.** Third-party actions are pinned to
+  exact commits, so a hijacked release tag can't change what runs;
+  Dependabot proposes updates weekly, only for releases at least a week
+  old.
+- **The pipeline never applies.** It checks, but it never changes
+  anything. A pipeline that applies would need admin rights over the
+  whole organization without MFA, which would make it the most valuable
+  target in the setup. I apply from my laptop, with MFA.
 
 ### Cost
 
@@ -147,7 +178,7 @@ Would a forgotten resource or a crypto-miner surprise me on the bill?
 
 ## Results
 
-- **41 findings:** 1 critical, 6 high, 9 medium, 21 low and 4
+- **48 findings:** 1 critical, 6 high, 10 medium, 23 low and 8
   informational. Every critical, high and medium finding is fixed. The
   critical one, a path from one compromised account to the whole
   organization, I found by reviewing the roles myself, before running any
@@ -162,10 +193,11 @@ Would a forgotten resource or a crypto-miner surprise me on the bill?
   scanner errors I traced to Prowler's own code. The 7 critical ones: my
   admin role's AdministratorAccess (4), app-based root MFA (1), scanner
   errors (2) — see Limits.
-- **Code:** Checkov reports nothing unexplained: 113 checks pass, 34
-  accepted ones carry their reason in the code, and the one failure
-  (CloudFront access logging on my website) is a known gap, left failing
-  on purpose as a reminder. No secrets in the repository (gitleaks).
+- **Code:** Checkov reports nothing unexplained: 138 checks pass, none
+  fail, and each of the 38 skipped checks carries its reason in the code.
+  All but one are accepted trade-offs; the one known gap (CloudFront
+  access logging on my website) is marked as deferred. gitleaks finds no
+  secrets in the full git history. Both run on every push.
 
 ## Limits and trade-offs
 
@@ -188,6 +220,20 @@ What I deliberately didn't do, and why:
   are locked off and watched by GuardDuty instead of configured.
 - **Alerts are email only.** No paging, ticketing or SIEM, and
   investigating means reading the logs directly.
+- **CI checks the code after the fact.** On GitHub's free plan a private
+  repository can't require checks before a change lands, and I apply
+  from my laptop before pushing. So CI catches mistakes in the code; the
+  plan I review before every apply is the real gate.
+- **A tag isn't proof.** Anyone who can create a resource can also add
+  `ManagedBy = terraform`, so the untagged check finds forgotten or
+  careless resources, not a careful attacker. CloudTrail and the alerts
+  cover that.
+- **Daily, not real time.** Drift and resources outside the code show up
+  within a day; the alerts cover the most sensitive changes in minutes.
+  The drift check only emails on failure, so if it ever stopped running
+  I'd notice in the monthly alert test. Config's view covers us-east-1,
+  where the region lock keeps member accounts; management isn't
+  region-locked.
 - **The AI assistant's limits stop mistakes, not attackers.** The rules
   match command text, so a determined attacker could get around them.
   Separate read-only credentials for the assistant would be the real
@@ -229,6 +275,18 @@ What I deliberately didn't do, and why:
   change S3 public-access settings, was denied; lab's exception still
   worked.
 
+### Changes and drift
+- Drift: a policy that existed in AWS but not yet in the code turned the
+  run red, naming that exact policy; after pushing the code, all four
+  accounts went green.
+- Resources outside the code: an untagged SNS topic created in lab turned
+  the run red and named it; after deleting it, green again.
+- Data source: before relying on it, I checked it against known facts.
+  Resource Explorer still listed a role deleted the day before, so I used
+  AWS Config, which was current.
+- Role lock: a lab admin trying to change the drift role was denied by
+  the service control policy.
+
 ## What's in this repo
 
 - `infra/`: all the Terraform, one folder per account (`management`,
@@ -241,3 +299,7 @@ What I deliberately didn't do, and why:
 - `infra/live` also runs my personal website (S3 + CloudFront, deployed
   from GitHub without stored keys).
 - [`runbook.md`](runbook.md): what I do when each alert arrives.
+- `ci/`: the GitHub Actions workflows and Dependabot config as they run
+  in my private working repository (kept out of `.github/` so they
+  don't run here). The reviewed untagged-resource lists stay private:
+  they contain account IDs.
