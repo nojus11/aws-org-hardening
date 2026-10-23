@@ -94,13 +94,16 @@ resource "aws_organizations_policy_attachment" "protect_log_archive_security" {
 }
 
 # Protect the alerting pipeline (forwarders, their role, the hub and its email
-# topic) from every identity in the member accounts, admins included.
+# topic) and the access key responder (its rule, function and role) from every
+# identity in the member accounts, admins included. The responder is locked
+# here, not in ProtectBaseline: detaching that one (to change the baseline)
+# also lifts the key block, so the responder must stay locked meanwhile.
 # EventBridge itself and service-linked roles are not affected by SCPs.
 # To change any of it on purpose: detach this policy from management first,
 # which itself triggers a "guardrails changed" alert.
 resource "aws_organizations_policy" "protect_alerting" {
   name        = "ProtectAlerting"
-  description = "Deny tampering with the alerting forwarders, hub and topic"
+  description = "Deny tampering with the alerting forwarders, hub, topic and access key responder"
   type        = "SERVICE_CONTROL_POLICY"
   content = jsonencode({
     Version = "2012-10-17"
@@ -112,6 +115,7 @@ resource "aws_organizations_policy" "protect_alerting" {
         Resource = [
           "arn:aws:events:*:*:rule/forward-*",                                                # spokes: every account and region
           "arn:aws:events:us-east-1:${local.security_account_id}:rule/org-security-events/*", # hub rules
+          "arn:aws:events:*:*:rule/respond-new-access-key",                                   # responder trigger
         ]
       },
       {
@@ -138,13 +142,27 @@ resource "aws_organizations_policy" "protect_alerting" {
         Resource = "arn:aws:sns:us-east-1:${local.security_account_id}:security-alerts"
       },
       {
-        Sid    = "DenyForwarderRoleTampering"
+        # Concurrency 0 is a quiet off switch; removing the invoke permission
+        # stops EventBridge from running it.
+        Sid    = "DenyResponderTampering"
+        Effect = "Deny"
+        Action = [
+          "lambda:UpdateFunctionCode", "lambda:UpdateFunctionConfiguration", "lambda:DeleteFunction",
+          "lambda:PutFunctionConcurrency", "lambda:AddPermission", "lambda:RemovePermission",
+        ]
+        Resource = "arn:aws:lambda:*:*:function:access-key-responder"
+      },
+      {
+        Sid    = "DenyAlertingRoleTampering"
         Effect = "Deny"
         Action = [
           "iam:DeleteRole", "iam:UpdateAssumeRolePolicy", "iam:PutRolePolicy", "iam:DeleteRolePolicy",
           "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:PutRolePermissionsBoundary",
         ]
-        Resource = "arn:aws:iam::*:role/alert-forwarder"
+        Resource = [
+          "arn:aws:iam::*:role/alert-forwarder",
+          "arn:aws:iam::*:role/access-key-responder",
+        ]
       },
     ]
   })
@@ -302,8 +320,9 @@ resource "aws_organizations_policy_attachment" "restrict_instance_types" {
 
 # Protect the account baseline (infra/modules/account-baseline) from every
 # identity in the member accounts, admins included: nobody can quietly undo
-# encryption, public-access blocks, Config or Access Analyzer. Lab keeps its
-# deliberate exceptions (S3/VPC Block Public Access, default VPC).
+# encryption, public-access blocks, Config or Access Analyzer, or create IAM
+# users or long-lived keys (access is SSO only). Lab keeps its deliberate
+# exceptions (S3/VPC Block Public Access, default VPC).
 # Attached to the three OUs (root SCP slots are nearly full).
 # To change on purpose: detach first (alerts), like the others.
 locals {
@@ -355,6 +374,15 @@ resource "aws_organizations_policy" "protect_baseline" {
         ]
         Resource = "arn:aws:iam::*:role/github-drift-check"
       },
+      {
+        # Persistence: a stolen SSO session dies within 1h; an IAM user's
+        # password or access key never expires. Lab experiment that needs
+        # one: temporary exception, removed after.
+        Sid      = "DenyIamUsersAndKeys"
+        Effect   = "Deny"
+        Action   = ["iam:CreateUser", "iam:CreateLoginProfile", "iam:CreateAccessKey"]
+        Resource = "*"
+      },
     ]
   })
 
@@ -372,6 +400,42 @@ resource "aws_organizations_policy_attachment" "protect_baseline" {
 
   policy_id = aws_organizations_policy.protect_baseline.id
   target_id = each.value
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# Containment: everything in a quarantined account is denied, including
+# sessions an attacker already holds (SCPs are checked on every request).
+# Kept working: the alert forwarder (alerts keep flowing) and the read-only
+# SecurityAudit role (investigate inside). AWS services and service-linked
+# roles (CloudTrail, Config, GuardDuty) aren't affected by SCPs.
+resource "aws_organizations_policy" "quarantine" {
+  name        = "Quarantine"
+  description = "Deny everything in a quarantined account, except alert forwarding and read-only audit"
+  type        = "SERVICE_CONTROL_POLICY"
+  content = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "DenyAllExceptAlertingAndAudit"
+      Effect   = "Deny"
+      Action   = "*"
+      Resource = "*"
+      Condition = {
+        ArnNotLike = { "aws:PrincipalARN" = [local.audit_role_arn, "arn:aws:iam::*:role/alert-forwarder"] }
+      }
+    }]
+  })
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_organizations_policy_attachment" "quarantine" {
+  policy_id = aws_organizations_policy.quarantine.id
+  target_id = aws_organizations_organizational_unit.quarantine.id
 
   lifecycle {
     prevent_destroy = true

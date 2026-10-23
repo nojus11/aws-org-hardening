@@ -26,6 +26,17 @@ resource "aws_organizations_organizational_unit" "lab" {
   }
 }
 
+# Empty by design. Moving a compromised account here freezes it (SCP
+# Quarantine). Runbook: "Quarantine an account".
+resource "aws_organizations_organizational_unit" "quarantine" {
+  name      = "Quarantine"
+  parent_id = aws_organizations_organization.this.roots[0].id
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
 resource "aws_organizations_account" "management" {
   name              = "Management Account"
   email             = var.account_emails.management

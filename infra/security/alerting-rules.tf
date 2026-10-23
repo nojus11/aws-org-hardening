@@ -40,6 +40,14 @@ locals {
 
   api_call = ["AWS API Call via CloudTrail"]
 
+  # Lambda event names carry an API version suffix
+  # (UpdateFunctionCode20150331v2): match by prefix.
+  responder_lambda_actions = [
+    { prefix = "UpdateFunctionCode" }, { prefix = "UpdateFunctionConfiguration" },
+    { prefix = "DeleteFunction" }, { prefix = "PutFunctionConcurrency" },
+    { prefix = "AddPermission" }, { prefix = "RemovePermission" },
+  ]
+
   alert_rules = {
     root-signin = {
       title  = "Root console sign-in"
@@ -175,6 +183,44 @@ locals {
                 "CreateTrustedTokenIssuer", "UpdateTrustedTokenIssuer",
                 "UpdateInstance", "DeleteInstance",
               ]
+            }
+          },
+        ]
+      })
+    }
+    # The access key responder's function and role, plus the forwarders' role
+    # (rule changes are already in alerting-tampering). In management, where
+    # SCPs can't lock them, this alert is the only guard.
+    responder-tampering = {
+      title  = "Access key responder changed"
+      format = "api_call"
+      pattern = jsonencode({
+        "detail-type" = local.api_call
+        "$or" = [
+          {
+            detail = {
+              eventSource       = ["lambda.amazonaws.com"]
+              eventName         = local.responder_lambda_actions
+              requestParameters = { functionName = [{ wildcard = "*access-key-responder*" }] }
+            }
+          },
+          # A blocked attempt (SCP) is logged without the function name
+          # (requestParameters: null), so any blocked Lambda change alerts.
+          {
+            detail = {
+              eventSource = ["lambda.amazonaws.com"]
+              eventName   = local.responder_lambda_actions
+              errorCode   = [{ prefix = "AccessDenied" }]
+            }
+          },
+          {
+            detail = {
+              eventSource = ["iam.amazonaws.com"]
+              eventName = [
+                "DeleteRole", "UpdateAssumeRolePolicy", "PutRolePolicy", "DeleteRolePolicy",
+                "AttachRolePolicy", "DetachRolePolicy", "PutRolePermissionsBoundary",
+              ]
+              requestParameters = { roleName = ["access-key-responder", "alert-forwarder"] }
             }
           },
         ]

@@ -11,7 +11,7 @@ follow established standards, and testing that each one actually works.
 
 ## What it looks like now
 
-![Guardrails (SCPs) flow down from management to live, lab and security; all four accounts send their logs and security events into security, which emails me alerts.](architecture.drawio.svg)
+![Guardrails (SCPs) flow down from management to live, lab, security and an empty quarantine OU; all four accounts send their logs and security events into security, which emails me alerts.](architecture.drawio.svg)
 
 Four accounts in one AWS Organization, each with one job:
 
@@ -31,8 +31,9 @@ Four accounts in one AWS Organization, each with one job:
 
 Every account also gets the same baseline from one Terraform module: AWS
 Config recording, IAM Access Analyzer, safe defaults (see Guardrails), a
-forwarder that sends its security events to the alerting hub, and the
-read-only role the daily drift check signs in with.
+forwarder that sends its security events to the alerting hub, the
+access-key responder, and the read-only role the daily drift check signs
+in with.
 
 The direction matters: evidence and alerts flow *into* security, and
 guardrails flow *down* from management. Someone who takes over live or lab
@@ -97,8 +98,9 @@ Would I find out about an attack?
   same kind of trust as the back-door roles).
 - **Alerts that reach me.** Findings in a console nobody watches are no
   use. Every account forwards security-relevant events to one alerting hub
-  in the security account, where eleven rules email me a one-line summary:
-  root sign-in or use; changes to logging, detection or alerting; guardrail
+  in the security account, where twelve rules email me a one-line summary:
+  root sign-in or use; changes to logging, detection, alerting or the
+  access-key responder; guardrail
   and single sign-on changes; new IAM users or keys; new external access;
   and GuardDuty findings of medium severity or higher. A service control
   policy stops member-account admins from switching their forwarding off,
@@ -177,6 +179,41 @@ Is every change checked, and would I notice one I didn't make?
   whole organization without MFA, which would make it the most valuable
   target in the setup. I apply from my laptop, with MFA.
 
+### Respond and recover
+
+If someone gets in anyway, can I stop them and get back to normal?
+
+- **No way to stay in.** A stolen single sign-on session dies within an
+  hour, so an attacker's first move is a way back in that doesn't
+  expire: an IAM user or an access key. A service control policy blocks
+  creating either in member accounts. Policies can't reach management,
+  so every account also runs a small function that switches off any new
+  access key within seconds, keeping it as evidence.
+- **The responder can't be switched off.** Disabling that function would
+  be the next move. A service control policy locks its trigger, code and
+  role in member accounts, and changes to it email me, as do blocked
+  attempts to change the function.
+- **One move to freeze an account.** A new password doesn't end a
+  session that's already stolen. Moving the account into a quarantine
+  OU does: a deny-everything policy stops every request within a minute,
+  except the alert forwarding and the read-only auditor I investigate
+  with.
+- **State that can't be wiped.** The Terraform state files map
+  everything I run. Versioning keeps old copies, but an admin can delete
+  versions for good, so every new version is locked under S3 Object
+  Lock in compliance mode for a year: nobody, root included, can delete
+  one early. A bad or malicious write can always be rolled back.
+- **Locked out of my own bucket.** An admin can set a bucket policy that
+  denies everyone, me included, and only the account's root can remove
+  it. Member accounts have no root passwords, so the unlock runs as a
+  short-lived root session from management, and it raises two alerts:
+  the request and what root did.
+- **Rebuild from code.** The website's resources reference each other in
+  the code, so if its CloudFront distribution were deleted, one apply
+  would recreate it and rewire everything that points at it. The two
+  steps outside Terraform (redeploying the files and updating the
+  deploy's distribution ID) are one command each.
+
 ### Cost
 
 Would a forgotten resource or a crypto-miner surprise me on the bill?
@@ -193,7 +230,7 @@ Would a forgotten resource or a crypto-miner surprise me on the bill?
 
 ## Results
 
-- **50 findings:** 1 critical, 6 high, 10 medium, 23 low and 10
+- **60 findings:** 1 critical, 6 high, 11 medium, 23 low and 19
   informational. Every critical, high and medium finding is fixed. The
   critical one, a path from one compromised account to the whole
   organization, I found by reviewing the roles myself, before running any
@@ -208,8 +245,8 @@ Would a forgotten resource or a crypto-miner surprise me on the bill?
   scanner errors I traced to Prowler's own code. The 7 critical ones: my
   admin role's AdministratorAccess (4), app-based root MFA (1), scanner
   errors (2) — see Limits.
-- **Code:** Checkov reports nothing unexplained: 138 checks pass, none
-  fail, and each of the 38 skipped checks carries its reason in the code.
+- **Code:** Checkov reports nothing unexplained: 168 checks pass, none
+  fail, and each of the 62 skipped checks carries its reason in the code.
   All but one are accepted trade-offs; the one known gap (CloudFront
   access logging on my website) is marked as deferred. gitleaks finds no
   secrets in the full git history. Both run on every push.
@@ -257,6 +294,22 @@ What I deliberately didn't do, and why:
   set by Terraform and guarded by a service control policy; a third
   layer couldn't be tested on its own and risked lab's deliberate
   exception.
+- **Management can't be frozen.** It can't be moved into quarantine,
+  its own admin could switch its key responder off (that alerts), and
+  unlocking its buckets takes the root sign-in. There, break-glass is
+  the response.
+- **Some recovery is untested.** Quarantine was drilled on lab only;
+  live and security should keep their AWS-run parts working (the
+  website, log delivery, the alert hub), but I haven't proven it.
+  Rebuilding the website would mean taking the real site down, so only
+  the redeploy step is tested.
+- **State protection has edges.** Each state version is locked for a
+  year from when it was written, so an account untouched for over a
+  year has an unlocked current version, and nothing can be removed
+  early, even by me. Every apply writes state, so writes don't alert:
+  an overwrite shows up in the daily drift check instead.
+- **A few seconds' window.** A new access key works for about four
+  seconds before the responder switches it off.
 - **The AI assistant's limits stop mistakes, not attackers.** The rules
   match command text, so a determined attacker could get around them.
   Separate read-only credentials for the assistant would be the real
@@ -319,18 +372,44 @@ What I deliberately didn't do, and why:
 - Role lock: a lab admin trying to change the drift role was denied by
   the service control policy.
 
+### Respond and recover
+- No users or keys: a lab admin trying to create an IAM user, a password
+  or an access key was denied, and each attempt still sent an alert.
+- Responder: an access key created in management was switched off about
+  four seconds later. A lab admin trying to disable its trigger, stop
+  the function or strip its role was denied, and blocked attempts alert.
+- Quarantine: moving lab into the quarantine OU stopped an admin session
+  that was already open, while alerts kept arriving and the read-only
+  auditor still worked; moving it back restored access.
+- Incident drill: from a staged 3 a.m. alert to release, using only the
+  runbook. It found three gaps: placeholder commands slowed me down, the
+  runbook thought in single accounts while a stolen identity reaches all
+  four, and CloudTrail's event history lagged the alert by over ten
+  minutes. The first two are fixed; the third is now in the runbook.
+- State: a lab admin deleting a locked state version was refused. I
+  overwrote lab's state with junk, `terraform plan` failed, and restoring
+  the last good version brought it back to "No changes".
+- Locked bucket: a lab bucket with a deny-everyone policy refused my
+  admin; a short-lived root session from management removed the policy,
+  and both alerts arrived.
+- Rebuild: the website's manual redeploy works (the full rebuild is
+  untested, see Limits).
+
 ## What's in this repo
 
 - `infra/`: all the Terraform, one folder per account (`management`,
   `security`, `live`, `lab`) plus shared `modules/`; each folder is
   applied on its own. `modules/account-baseline` is the set of defaults
   every account gets.
+- `infra/modules/account-baseline/lambda/`: the access-key responder's
+  Python code.
 - Account IDs and emails aren't in the code: each folder reads them from
   a private `terraform.tfvars` (and the state bucket from `backend.hcl`).
   The `.example` files show the shape.
 - `infra/live` also runs my personal website (S3 + CloudFront, deployed
   from GitHub without stored keys).
-- [`runbook.md`](runbook.md): what I do when each alert arrives.
+- [`runbook.md`](runbook.md): what I do when each alert arrives, and how
+  to contain an incident and recover.
 - `ci/`: the GitHub Actions workflows and Dependabot config as they run
   in my private working repository (kept out of `.github/` so they
   don't run here). The reviewed untagged-resource lists stay private:

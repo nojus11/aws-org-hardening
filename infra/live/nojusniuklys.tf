@@ -142,6 +142,11 @@ output "nojusniuklys_cloudfront_domain" {
   value = aws_cloudfront_distribution.nojusniuklys.domain_name
 }
 
+output "nojusniuklys_cloudfront_id" {
+  description = "Site repo secret CLOUDFRONT_DISTRIBUTION_ID: update it if the distribution is rebuilt"
+  value       = aws_cloudfront_distribution.nojusniuklys.id
+}
+
 # Only this distribution may read the files; nothing over plain HTTP.
 resource "aws_s3_bucket_policy" "nojusniuklys_site" {
   bucket = aws_s3_bucket.nojusniuklys_site.id

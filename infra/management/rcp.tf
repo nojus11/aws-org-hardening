@@ -76,9 +76,10 @@ resource "aws_organizations_policy" "data_perimeter" {
 # Lab experiments needing outside access: detach lab for the experiment.
 resource "aws_organizations_policy_attachment" "data_perimeter" {
   for_each = {
-    lab      = aws_organizations_organizational_unit.lab.id
-    live     = aws_organizations_organizational_unit.live.id
-    security = aws_organizations_organizational_unit.security.id
+    lab        = aws_organizations_organizational_unit.lab.id
+    live       = aws_organizations_organizational_unit.live.id
+    security   = aws_organizations_organizational_unit.security.id
+    quarantine = aws_organizations_organizational_unit.quarantine.id
   }
 
   policy_id = aws_organizations_policy.data_perimeter.id

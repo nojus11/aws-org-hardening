@@ -30,9 +30,10 @@ resource "aws_organizations_policy" "ec2_baseline" {
 # Rolled out lab first (tested: admin changes denied), then live + security.
 resource "aws_organizations_policy_attachment" "ec2_baseline" {
   for_each = {
-    lab      = aws_organizations_organizational_unit.lab.id
-    live     = aws_organizations_organizational_unit.live.id
-    security = aws_organizations_organizational_unit.security.id
+    lab        = aws_organizations_organizational_unit.lab.id
+    live       = aws_organizations_organizational_unit.live.id
+    security   = aws_organizations_organizational_unit.security.id
+    quarantine = aws_organizations_organizational_unit.quarantine.id
   }
 
   policy_id = aws_organizations_policy.ec2_baseline.id

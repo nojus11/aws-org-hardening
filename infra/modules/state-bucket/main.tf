@@ -25,6 +25,21 @@ resource "aws_s3_bucket_versioning" "state" {
   }
 }
 
+# Lock every new state version for a year. Compliance mode: no one, not even
+# root, can delete it early, so a bad or malicious write can be rolled back.
+resource "aws_s3_bucket_object_lock_configuration" "state" {
+  bucket = aws_s3_bucket.state.id
+
+  rule {
+    default_retention {
+      mode = "COMPLIANCE"
+      days = 365
+    }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.state]
+}
+
 resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
   bucket = aws_s3_bucket.state.id
 

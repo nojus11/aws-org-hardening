@@ -169,6 +169,7 @@ resource "aws_cloudwatch_event_rule" "forward_security_events" {
             "securityhub.amazonaws.com", "access-analyzer.amazonaws.com", "events.amazonaws.com",
             "sns.amazonaws.com", "organizations.amazonaws.com", "iam.amazonaws.com",
             "sso.amazonaws.com", "sso-directory.amazonaws.com", "identitystore.amazonaws.com",
+            "lambda.amazonaws.com",
           ]
           userIdentity = { type = [{ "anything-but" = ["Root"] }] }
         }
@@ -216,6 +217,98 @@ resource "aws_cloudwatch_event_target" "forward_root_events" {
   rule     = aws_cloudwatch_event_rule.forward_root_events[each.key].name
   arn      = var.alert_hub_bus_arn
   role_arn = aws_iam_role.alert_forwarder.arn
+}
+
+# --- Access key responder: switch off any new IAM access key within seconds ---
+# (SCP blocks keys in member accounts; this covers management and SCP gaps.)
+
+data "archive_file" "access_key_responder" {
+  type             = "zip"
+  source_file      = "${path.module}/lambda/deactivate_access_key.py"
+  output_path      = "${path.root}/.terraform/lambda/deactivate_access_key.zip"
+  output_file_mode = "0644" # same zip on every machine: no false drift in CI
+}
+
+resource "aws_iam_role" "access_key_responder" {
+  name = "access-key-responder"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+# Only switch key status (can't create, delete or read keys) + its own logs.
+resource "aws_iam_role_policy" "access_key_responder" {
+  name = "deactivate-access-keys"
+  role = aws_iam_role.access_key_responder.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "iam:UpdateAccessKey"
+        Resource = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.access_key_responder.arn}:*"
+      },
+    ]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "access_key_responder" {
+  #checkov:skip=CKV_AWS_158:logs hold only key IDs; encrypted at rest by default; a key per account isn't worth $1/month each
+  name              = "/aws/lambda/access-key-responder"
+  retention_in_days = 365
+}
+
+resource "aws_lambda_function" "access_key_responder" {
+  #checkov:skip=CKV_AWS_272:code ships only via Terraform from this repo; signing needs a Signer profile per account for a 15-line function
+  #checkov:skip=CKV_AWS_116:a failed run still leaves the CreateAccessKey alert (runbook: deactivate by hand); a queue nobody reads adds nothing
+  #checkov:skip=CKV_AWS_115:a cap would throttle it exactly when an attacker creates many keys at once
+  #checkov:skip=CKV_AWS_117:only calls the IAM API; a VPC would need a NAT gateway (~$30/month) and adds no protection
+  #checkov:skip=CKV_AWS_50:one API call per run; the log line is the record
+  function_name    = "access-key-responder"
+  role             = aws_iam_role.access_key_responder.arn
+  runtime          = "python3.13"
+  handler          = "deactivate_access_key.handler"
+  filename         = data.archive_file.access_key_responder.output_path
+  source_code_hash = data.archive_file.access_key_responder.output_base64sha256
+  timeout          = 10
+  depends_on       = [aws_cloudwatch_log_group.access_key_responder]
+}
+
+# Successful CreateAccessKey only: a blocked attempt has no key to switch off.
+resource "aws_cloudwatch_event_rule" "access_key_responder" {
+  name        = "respond-new-access-key"
+  description = "Deactivate any new IAM access key"
+  event_pattern = jsonencode({
+    "detail-type" = ["AWS API Call via CloudTrail"]
+    detail = {
+      eventSource = ["iam.amazonaws.com"]
+      eventName   = ["CreateAccessKey"]
+      errorCode   = [{ exists = false }]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "access_key_responder" {
+  rule = aws_cloudwatch_event_rule.access_key_responder.name
+  arn  = aws_lambda_function.access_key_responder.arn
+}
+
+resource "aws_lambda_permission" "access_key_responder" {
+  statement_id  = "AllowEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.access_key_responder.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.access_key_responder.arn
 }
 
 # --- Drift check: GitHub's daily read-only `terraform plan` ---
@@ -270,5 +363,20 @@ resource "aws_iam_role_policy" "github_drift_check_state" {
         Resource = "arn:aws:s3:::tfstate-${data.aws_caller_identity.current.account_id}/*"
       },
     ]
+  })
+}
+
+# SecurityAudit leaves out lambda:GetFunction (it returns a link to the
+# code); plan needs it to read the responder, whose code is in this repo.
+resource "aws_iam_role_policy" "github_drift_check_lambda" {
+  name = "read-access-key-responder"
+  role = aws_iam_role.github_drift_check.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "lambda:GetFunction"
+      Resource = aws_lambda_function.access_key_responder.arn
+    }]
   })
 }
