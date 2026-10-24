@@ -125,6 +125,18 @@ resource "aws_cloudfront_distribution" "nojusniuklys" {
     compress                   = true
   }
 
+  # Missing pages: S3 answers 403 (CloudFront may only GetObject, not
+  # list the bucket), so both codes show the site's own 404 page.
+  dynamic "custom_error_response" {
+    for_each = [403, 404]
+    content {
+      error_code            = custom_error_response.value
+      response_code         = 404
+      response_page_path    = "/404.html"
+      error_caching_min_ttl = 300
+    }
+  }
+
   viewer_certificate {
     acm_certificate_arn      = aws_acm_certificate_validation.nojusniuklys.certificate_arn
     ssl_support_method       = "sni-only"
@@ -199,18 +211,26 @@ resource "aws_cloudfront_response_headers_policy" "nojusniuklys" {
       referrer_policy = "strict-origin-when-cross-origin"
       override        = true
     }
+    # Only the site's own stylesheet and images: no inline styles, no
+    # third parties (system fonts), no scripts, forms or framing.
     content_security_policy {
       content_security_policy = join("; ", [
         "default-src 'none'",
-        # 'unsafe-inline': inline styles on the placeholder pages; drop it
-        # with the content rework
-        "style-src 'self' https://fonts.googleapis.com 'unsafe-inline'",
-        "font-src https://fonts.gstatic.com",
+        "style-src 'self'",
         "img-src 'self'",
         "base-uri 'none'",
         "form-action 'none'",
         "frame-ancestors 'none'",
       ])
+      override = true
+    }
+  }
+
+  # Browser features the site never uses, switched off.
+  custom_headers_config {
+    items {
+      header   = "Permissions-Policy"
+      value    = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
       override = true
     }
   }

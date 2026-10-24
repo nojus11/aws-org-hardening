@@ -230,7 +230,7 @@ Would a forgotten resource or a crypto-miner surprise me on the bill?
 
 ## Results
 
-- **61 findings:** 1 critical, 6 high, 11 medium, 23 low and 20
+- **62 findings:** 1 critical, 6 high, 11 medium, 23 low and 21
   informational. Every critical, high and medium finding is fixed. The
   critical one, a path from one compromised account to the whole
   organization, I found by reviewing the roles myself, before running any
