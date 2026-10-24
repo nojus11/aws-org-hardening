@@ -27,7 +27,7 @@ Four accounts in one AWS Organization, each with one job:
 - **security**: the audit trail and the security tooling. Stores every
   account's CloudTrail and AWS Config logs (S3, KMS-encrypted, CloudTrail
   logs under Object Lock); delegated administrator for GuardDuty and
-  Security Hub; hosts the alerting hub (EventBridge → SNS email).
+  Security Hub CSPM; hosts the alerting hub (EventBridge → SNS email).
 
 Every account also gets the same baseline from one Terraform module: AWS
 Config recording, IAM Access Analyzer, safe defaults (see Guardrails), a
@@ -92,7 +92,7 @@ Would I find out about an attack?
   17 regions, run from the security account, and new accounts join
   automatically. It covers regions I don't use too, because that's exactly
   where an attacker would go.
-- **Continuous checks.** Security Hub runs AWS's Foundational Security Best
+- **Continuous checks.** Security Hub CSPM runs AWS's Foundational Security Best
   Practices checks in every account. IAM Access Analyzer flags anything
   shared outside an account, including with my own other accounts (the
   same kind of trust as the back-door roles).
@@ -230,7 +230,7 @@ Would a forgotten resource or a crypto-miner surprise me on the bill?
 
 ## Results
 
-- **60 findings:** 1 critical, 6 high, 11 medium, 23 low and 19
+- **61 findings:** 1 critical, 6 high, 11 medium, 23 low and 20
   informational. Every critical, high and medium finding is fixed. The
   critical one, a path from one compromised account to the whole
   organization, I found by reviewing the roles myself, before running any
@@ -320,8 +320,13 @@ What I deliberately didn't do, and why:
 ### Identity and access
 - Read-only auditor: reads every account's configuration (the scanners ran
   with it), but downloading a Terraform state file returns 403.
-- Break-glass: a real root session from management triggered an alert
-  email. Root can't be used quietly.
+- Break-glass: a root session from management for a member-account task,
+  and a management root console sign-in, each triggered an alert. The
+  sign-in was recorded in us-east-2, so only the all-region forwarding
+  caught it. Root can't be used quietly.
+- Cutting a stolen identity: as root, I disabled my own single sign-on
+  user. Sign-in was refused, the change alerted, and re-enabling restored
+  access.
 - Assistant: its attempts to run AWS or `terraform apply`, including
   disguised variants, were denied.
 

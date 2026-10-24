@@ -100,14 +100,15 @@ in the account is denied, including sessions an attacker already holds.
 
 **My SSO identity is compromised** (`by` is my SSO session, but the IP or
 time isn't me). The identity reaches every account: one account's
-containment isn't enough. *Steps 2–3 untested (drill 2026-10-22 talked
-them through).*
+containment isn't enough. *Step 2 drilled 2026-10-24; step 3 untested.*
 1. **Contain members:** quarantine every member account with activity
    from it (each account's CloudTrail, `Username = <session name>`);
    unsure → all three.
 2. **Cut the identity** via break-glass (management root, not my SSO
    login, which the attacker may hold): Identity Center → Users → disable
    the user. Stops new sessions in every account, management included.
+   Expect two alerts: Identity Center changed + Change made as root
+   (DisableUser).
 3. **Management** can't be quarantined; sessions already issued last up
    to 1h → watch its alerts, undo changes as root.
 4. **Eradicate:** find how it was stolen (phishing, laptop, leaked token)
@@ -142,6 +143,8 @@ arn=arn:aws:iam::aws:policy/root-task/<Task> --profile management --region us-ea
 Tasks: IAMAuditRootUserCredentials, IAMCreateRootUserPassword,
 IAMDeleteRootUserCredentials, S3UnlockBucketPolicy, SQSUnlockQueuePolicy.
 15-minute session. Expect the AssumeRoot alert.
+A root sign-in alert can come from any region (the sign-in endpoint's),
+e.g. us-east-2.
 
 **A bucket locked by its own policy** (admin gets "explicit deny in a
 resource-based policy" on a bucket I own):
